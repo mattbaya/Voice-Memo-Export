@@ -1,0 +1,5 @@
+# Exported recordings are personal data — never commit them
+*.mp3
+*.m4a
+*.qta
+.DS_Store

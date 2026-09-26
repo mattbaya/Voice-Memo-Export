@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Export every Apple Voice Memos recording to MP3.
+#
+# Usage: export-voice-memos [output_dir]   (default: directory containing this script)
+#
+# Requires Full Disk Access for whatever app runs it (Terminal, iTerm, ...),
+# because Voice Memos data lives in a TCC-protected group container.
+# Env overrides: VM_DIR (recordings dir), MP3_QUALITY (ffmpeg -q:a, 0=best..9, default 2)
+
+set -euo pipefail
+
+VM_DIR="${VM_DIR:-$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings}"
+OUT_DIR="${1:-$(cd "$(dirname "$0")" && pwd)}"
+MP3_QUALITY="${MP3_QUALITY:-2}"
+DB="$VM_DIR/CloudRecordings.db"
+
+command -v ffmpeg >/dev/null || { echo "ffmpeg not found (brew install ffmpeg)" >&2; exit 1; }
+if ! ls "$VM_DIR" >/dev/null 2>&1; then
+  echo "Cannot read $VM_DIR" >&2
+  echo "Grant Full Disk Access to your terminal app: System Settings > Privacy & Security > Full Disk Access" >&2
+  exit 1
+fi
+[[ -f "$DB" ]] || { echo "Database not found: $DB" >&2; exit 1; }
+
+# Copy the DB so we don't contend with the Voice Memos app's lock.
+TMP_DB="$(mktemp -t voicememos).db"
+trap 'rm -f "$TMP_DB"' EXIT
+sqlite3 "$DB" ".backup '$TMP_DB'"
+
+# Column names vary a little across macOS versions; pick what exists.
+cols="$(sqlite3 "$TMP_DB" "SELECT name FROM pragma_table_info('ZCLOUDRECORDING');")"
+has() { grep -qx "$1" <<<"$cols"; }
+title_expr="''"
+has ZCUSTOMLABEL     && title_expr="ZCUSTOMLABEL"
+has ZENCRYPTEDTITLE  && title_expr="COALESCE(NULLIF(ZENCRYPTEDTITLE,''), $title_expr)"
+evict_filter=""
+has ZEVICTIONDATE    && evict_filter="AND ZEVICTIONDATE IS NULL"   # skip "Recently Deleted"
+
+SEP=$'\x1f'
+mkdir -p "$OUT_DIR"
+exported=0 skipped=0 missing=0 failed=0
+
+while IFS="$SEP" read -r path title ts; do
+  src="$path"
+  [[ "$src" == /* ]] || src="$VM_DIR/$src"
+  if [[ ! -f "$src" ]]; then
+    echo "MISSING (not downloaded from iCloud?): $title [$path]" >&2
+    missing=$((missing + 1)); continue
+  fi
+
+  date_str="$(date -r "$ts" '+%Y-%m-%d %H%M%S')"
+  safe_title="$(printf '%s' "${title:-Untitled}" | tr '/:\\' '---' | tr -d '\000-\037' | cut -c1-120)"
+  dest="$OUT_DIR/$date_str - $safe_title.mp3"
+
+  if [[ -f "$dest" ]]; then
+    skipped=$((skipped + 1)); continue
+  fi
+
+  echo "-> $(basename "$dest")"
+  if ffmpeg -nostdin -hide_banner -loglevel error -i "$src" -vn \
+       -codec:a libmp3lame -q:a "$MP3_QUALITY" \
+       -metadata title="${title:-Untitled}" \
+       -metadata date="$(date -r "$ts" '+%Y-%m-%d')" \
+       -metadata album="Voice Memos" \
+       "$dest"; then
+    touch -t "$(date -r "$ts" '+%Y%m%d%H%M.%S')" "$dest"
+    exported=$((exported + 1))
+  else
+    echo "FAILED: $src" >&2
+    rm -f "$dest"; failed=$((failed + 1))
+  fi
+done < <(sqlite3 -separator "$SEP" "$TMP_DB" "
+  SELECT ZPATH, $title_expr, CAST(ZDATE + 978307200 AS INTEGER)
+  FROM ZCLOUDRECORDING
+  WHERE ZPATH IS NOT NULL AND ZPATH <> '' $evict_filter
+  ORDER BY ZDATE;")
+
+echo
+echo "Exported: $exported  Skipped (already exist): $skipped  Missing: $missing  Failed: $failed"
+echo "Output: $OUT_DIR"
