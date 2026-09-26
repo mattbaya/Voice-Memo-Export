@@ -18,6 +18,14 @@ A single Bash script, `export-voice-memos`, that converts Apple Voice Memos reco
 4. Column availability varies by macOS version. The script checks `pragma_table_info` before using optional columns. Keep that pattern when adding new ones.
 5. Each recording is transcoded with `libmp3lame` VBR, tagged, and `touch`ed to the recording date. Existing outputs are skipped (idempotent).
 
+## Memos missing or stored only in iCloud
+
+The script can't download from iCloud. It only reports memos whose `ZPATH` file is absent as `MISSING`. When a user says memos are missing:
+
+1. **Check what the Mac knows about.** The count next to "All Recordings" in the Voice Memos sidebar is the whole set this Mac has synced. If it's lower than the user expects, the memos aren't syncing: point the user to iCloud → Saved to iCloud → Voice Memos on both the iPhone and the Mac. Don't change these settings yourself; they belong to the user.
+2. **Force downloads by selecting memos.** With the user's approval to control Voice Memos through computer use, click the first row in the list, then send ↓ one row at a time. Give each memo a moment to load its waveform, since keys pressed too quickly get dropped. Scroll to the bottom to confirm you've reached the end of the list. Voice Memos isn't AppleScript-scriptable, so this can't be done with `osascript`.
+3. **Ask the user to re-run the script.** It's idempotent and exports only the newly downloaded memos.
+
 ## Constraints and conventions
 
 - **TCC / Full Disk Access:** agents usually can't read the Voice Memos container from a sandboxed or unprivileged session. Don't try to bypass or modify macOS privacy settings. Ask the user to run the script from a terminal that has Full Disk Access and share the output.
